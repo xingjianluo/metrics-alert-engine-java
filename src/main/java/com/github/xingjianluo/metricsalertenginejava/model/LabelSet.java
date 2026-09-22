@@ -36,15 +36,41 @@ public final class LabelSet {
         return labels.size();
     }
 
-    /** 校验标签合法性，非法时抛出 IllegalArgumentException（消息可区分原因）。 */
+    /**
+     * 校验标签合法性，非法时抛出 IllegalArgumentException，消息前缀可区分原因：
+     * label.key.empty / label.key.separator / label.value.null / label.value.separator。
+     */
     public void validate() {
-        // TODO 骨架
+        for (Map.Entry<String, String> e : labels.entrySet()) {
+            String key = e.getKey();
+            String value = e.getValue();
+            if (key == null || key.isEmpty()) {
+                throw new IllegalArgumentException("label.key.empty: label key must not be null or empty");
+            }
+            if (key.contains(SEPARATOR)) {
+                throw new IllegalArgumentException(
+                        "label.key.separator: label key must not contain '" + SEPARATOR + "': " + key);
+            }
+            if (value == null) {
+                throw new IllegalArgumentException(
+                        "label.value.null: value for label key '" + key + "' must not be null");
+            }
+            if (value.contains(SEPARATOR)) {
+                throw new IllegalArgumentException(
+                        "label.value.separator: label value must not contain '" + SEPARATOR + "': " + key + "="
+                                + value);
+            }
+        }
     }
 
-    /** 确定性的序列标识：按 key 排序后拼接。 */
+    /** 确定性的序列标识：按 key 排序后拼接，形如 {@code |k1=v1|k2=v2|}，空标签为单个分隔符。 */
     public String seriesKey() {
-        // TODO 骨架
-        return null;
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, String> e : labels.entrySet()) {
+            sb.append(SEPARATOR).append(e.getKey()).append('=').append(e.getValue());
+        }
+        sb.append(SEPARATOR);
+        return sb.toString();
     }
 
     @Override

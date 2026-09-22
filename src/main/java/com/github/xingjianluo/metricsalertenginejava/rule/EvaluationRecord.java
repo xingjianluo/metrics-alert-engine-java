@@ -10,8 +10,11 @@ public record EvaluationRecord(String ruleId, int ruleVersion, LabelSet labels, 
                                Double inputValue, double threshold, boolean hit, AlertState stateBefore,
                                AlertState stateAfter, String transitionReason) {
 
+    /** 人类可读的判定依据：规则版本、窗口、输入值、阈值、是否命中、状态迁移。 */
     public String explain() {
-        // TODO 骨架
-        return null;
+        return "rule=" + ruleId + "@v" + ruleVersion + " labels=" + labels + " window=" + windowStart
+                + " input=" + inputValue + " threshold=" + threshold + " hit=" + hit
+                + " state " + stateBefore + "->" + stateAfter
+                + (transitionReason == null ? " (no transition)" : " (" + transitionReason + ")");
     }
 }

@@ -24,9 +24,13 @@ public final class EngineConfig {
         this.defaultAllowedFutureMillis = defaultAllowedFutureMillis;
     }
 
+    /**
+     * 默认容量：64 个指标定义、单指标 1000 条序列、单序列 10000 个点、256 条规则、
+     * 异步评估队列 2048、默认保留 24 小时、允许未来 60 秒时钟偏移。
+     */
     public static EngineConfig defaults() {
-        // TODO 骨架
-        return null;
+        return new EngineConfig(64, 1000, 10_000, 256, 2048,
+                24L * 60 * 60 * 1000, 60L * 1000);
     }
 
     public int maxMetrics() {

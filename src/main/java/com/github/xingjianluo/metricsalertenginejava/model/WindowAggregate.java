@@ -10,8 +10,7 @@ public record WindowAggregate(String metric, LabelSet labels, long windowStartMi
                               int metricVersion, long count, Map<Aggregator, Double> functions) {
 
     public Double get(Aggregator aggregator) {
-        // TODO 骨架
-        return null;
+        return functions.get(aggregator);
     }
 
     @Override
