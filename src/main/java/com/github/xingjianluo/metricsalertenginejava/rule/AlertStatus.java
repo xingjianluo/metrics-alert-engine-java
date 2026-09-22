@@ -94,7 +94,14 @@ public final class AlertStatus {
                 if (hit) {
                     consecutiveHits = 1;
                     consecutiveMisses = 0;
-                    state = AlertState.PENDING;
+                    if (pendingThreshold == 1) {
+                        transition = new Transition(AlertState.RESOLVED, AlertState.FIRING, windowStart,
+                                "first hit reached pending threshold 1");
+                        state = AlertState.FIRING;
+                        lastFiredWindowStart = windowStart;
+                    } else {
+                        state = AlertState.PENDING;
+                    }
                 }
                 // 未命中：保持 RESOLVED，计数维持 0
             }
