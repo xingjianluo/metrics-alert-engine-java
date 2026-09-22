@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.util.MultiValueMap;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -80,12 +81,23 @@ public class MetricsController {
                 .body(result);
     }
 
+    /** 仅提取 label. 前缀的查询参数作为标签，避免把 windowStart 等控制参数吞进标签 Map。 */
+    private static LabelSet labelsFromQuery(MultiValueMap<String, String> params) {
+        Map<String, String> labels = new LinkedHashMap<>();
+        params.forEach((key, values) -> {
+            if (key.startsWith("label.")) {
+                labels.put(key.substring("label.".length()), values.get(0));
+            }
+        });
+        return LabelSet.of(labels);
+    }
+
     @GetMapping("/metrics/{name}/query")
     public WindowAggregate query(@PathVariable String name,
-                                 @RequestParam(required = false) Map<String, String> labels,
+                                 @RequestParam MultiValueMap<String, String> allParams,
                                  @RequestParam long windowStart, @RequestParam long windowSize,
                                  @RequestParam(required = false) Integer metricVersion) {
-        LabelSet labelSet = LabelSet.of(labels == null ? Map.of() : new LinkedHashMap<>(labels));
+        LabelSet labelSet = labelsFromQuery(allParams);
         List<Aggregator> functions = List.of(Aggregator.values());
         return engine.queryWindow(name, labelSet, windowStart, windowSize, metricVersion, functions);
     }
@@ -111,9 +123,9 @@ public class MetricsController {
 
     @GetMapping("/rules/{id}/state")
     public Map<String, Object> state(@PathVariable String id,
-                                     @RequestParam(required = false) Map<String, String> labels,
+                                     @RequestParam MultiValueMap<String, String> allParams,
                                      @RequestParam(required = false) Integer version) {
-        LabelSet labelSet = LabelSet.of(labels == null ? Map.of() : new LinkedHashMap<>(labels));
+        LabelSet labelSet = labelsFromQuery(allParams);
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("state", engine.alertState(id, version, labelSet));
         out.put("evaluations", engine.evaluationHistory(id, version, labelSet));

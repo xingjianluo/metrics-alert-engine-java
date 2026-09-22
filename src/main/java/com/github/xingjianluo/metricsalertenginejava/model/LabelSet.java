@@ -1,5 +1,8 @@
 package com.github.xingjianluo.metricsalertenginejava.model;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
+
 import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
@@ -16,8 +19,15 @@ public final class LabelSet {
 
     private final Map<String, String> labels;
 
+    @JsonCreator
     public LabelSet(Map<String, String> labels) {
         this.labels = Collections.unmodifiableMap(new TreeMap<>(labels == null ? Map.of() : labels));
+    }
+
+    /** JSON 表示即为有序标签 Map，例如 {"host":"a","dc":"x"}。 */
+    @JsonValue
+    public Map<String, String> jsonMap() {
+        return labels;
     }
 
     public static LabelSet of(Map<String, String> labels) {
