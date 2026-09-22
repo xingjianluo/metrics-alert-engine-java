@@ -27,12 +27,14 @@ public final class AlertStatus {
     private int consecutiveMisses;
     private long lastFiredWindowStart = Long.MIN_VALUE;
     private long lastEvaluatedWindowStart = Long.MIN_VALUE;
+    private final long createdAtMillis;
     private long evaluations;
 
-    public AlertStatus(String ruleId, int ruleVersion, LabelSet labels) {
+    public AlertStatus(String ruleId, int ruleVersion, LabelSet labels, long createdAtMillis) {
         this.ruleId = ruleId;
         this.ruleVersion = ruleVersion;
         this.labels = labels;
+        this.createdAtMillis = createdAtMillis;
     }
 
     public String ruleId() {
@@ -65,6 +67,10 @@ public final class AlertStatus {
 
     public long lastEvaluatedWindowStart() {
         return lastEvaluatedWindowStart;
+    }
+
+    public long createdAtMillis() {
+        return createdAtMillis;
     }
 
     public long evaluations() {

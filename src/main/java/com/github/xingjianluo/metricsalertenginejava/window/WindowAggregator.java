@@ -5,6 +5,7 @@ import com.github.xingjianluo.metricsalertenginejava.model.LabelSet;
 import com.github.xingjianluo.metricsalertenginejava.model.WindowAggregate;
 import com.github.xingjianluo.metricsalertenginejava.storage.Series;
 
+import java.util.Collections;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -35,7 +36,7 @@ public final class WindowAggregator {
             selected.put(function, all.get(function));
         }
         return new WindowAggregate(metric, labels, windowStart, windowSize, metricVersion,
-                points.size(), Map.copyOf(selected));
+                points.size(), Collections.unmodifiableMap(new EnumMap<>(selected)));
     }
 
     /** 计算全部五种聚合函数。空点集：SUM=0, COUNT=0，其余为 null。 */
@@ -48,7 +49,7 @@ public final class WindowAggregator {
             result.put(Aggregator.AVG, null);
             result.put(Aggregator.MIN, null);
             result.put(Aggregator.MAX, null);
-            return Map.copyOf(result);
+            return Collections.unmodifiableMap(new EnumMap<>(result));
         }
         double sum = 0.0;
         double min = Double.POSITIVE_INFINITY;
@@ -63,6 +64,6 @@ public final class WindowAggregator {
         result.put(Aggregator.AVG, sum / count);
         result.put(Aggregator.MIN, min);
         result.put(Aggregator.MAX, max);
-        return Map.copyOf(result);
+        return Collections.unmodifiableMap(new EnumMap<>(result));
     }
 }

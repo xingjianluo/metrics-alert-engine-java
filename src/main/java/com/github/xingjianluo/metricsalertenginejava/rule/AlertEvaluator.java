@@ -43,21 +43,26 @@ public final class AlertEvaluator {
      */
     public EvaluationOutcome evaluate(AlertRule rule, LabelSet labels, WindowAggregate aggregate,
                                       long windowStart) {
-        if (windowStart % rule.windowSizeMillis() != 0) {
+        if (Math.floorMod(windowStart, rule.windowSizeMillis()) != 0) {
             throw new IllegalArgumentException(
                     "window.misaligned: windowStart " + windowStart + " not aligned to size "
                             + rule.windowSizeMillis());
         }
         synchronized (lock) {
-            AlertStatus status = statuses.computeIfAbsent(
-                    rule.id() + "@v" + rule.version() + labels.seriesKey(),
-                    k -> new AlertStatus(rule.id(), rule.version(), labels));
-
-            if (windowStart <= status.lastEvaluatedWindowStart()) {
+            String statusKey = rule.id() + "@v" + rule.version() + labels.seriesKey();
+            AlertStatus existing = statuses.get(statusKey);
+            if (existing != null && windowStart != existing.lastEvaluatedWindowStart()
+                    + rule.windowSizeMillis()) {
                 throw new IllegalStateException(
-                        "window.out.of.order: rule=" + rule.id() + " v" + rule.version() + " labels=" + labels
-                                + " window=" + windowStart + " lastEvaluated="
-                                + status.lastEvaluatedWindowStart());
+                        "window.gap.or.out.of.order: rule=" + rule.id() + " v" + rule.version()
+                                + " labels=" + labels + " window=" + windowStart
+                                + " expectedNext=" + (existing.lastEvaluatedWindowStart()
+                                + rule.windowSizeMillis()));
+            }
+            AlertStatus status = existing != null ? existing
+                    : new AlertStatus(rule.id(), rule.version(), labels, clock.getAsLong());
+            if (existing == null) {
+                statuses.put(statusKey, status);
             }
 
             AlertState before = status.state();
@@ -77,8 +82,10 @@ public final class AlertEvaluator {
             if (transition != null) {
                 String dedupKey = dedupKey(rule, labels, transition.to());
                 long now = clock.getAsLong();
-                Long lastSent = lastNotifiedAtByDedupKey.get(dedupKey);
-                boolean suppressed = lastSent != null && (now - lastSent) < rule.silenceMillis();
+                // 静默期锚点：该 (规则版本, 标签) 状态首次创建时间，或上一条同 dedupKey 实际发出时间
+                long anchor = Math.max(status.createdAtMillis(),
+                        lastNotifiedAtByDedupKey.getOrDefault(dedupKey, Long.MIN_VALUE));
+                boolean suppressed = (now - anchor) < rule.silenceMillis();
                 String message = buildMessage(rule, labels, transition, input, suppressed);
                 notification = new NotificationRecord(rule.id(), rule.version(), labels, transition.to(),
                         windowStart, now, suppressed, dedupKey, message);
