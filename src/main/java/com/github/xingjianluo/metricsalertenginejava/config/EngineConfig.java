@@ -3,11 +3,13 @@ package com.github.xingjianluo.metricsalertenginejava.config;
 import com.github.xingjianluo.metricsalertenginejava.engine.AlertEvaluator;
 import com.github.xingjianluo.metricsalertenginejava.engine.EngineClock;
 import com.github.xingjianluo.metricsalertenginejava.engine.IngestionService;
+import com.github.xingjianluo.metricsalertenginejava.engine.MetricDefinitionService;
 import com.github.xingjianluo.metricsalertenginejava.engine.NotificationService;
 import com.github.xingjianluo.metricsalertenginejava.engine.QueryService;
 import com.github.xingjianluo.metricsalertenginejava.engine.RetentionService;
 import com.github.xingjianluo.metricsalertenginejava.engine.SystemEngineClock;
 import com.github.xingjianluo.metricsalertenginejava.store.AlertStateStore;
+import com.github.xingjianluo.metricsalertenginejava.store.MetricDefinitionStore;
 import com.github.xingjianluo.metricsalertenginejava.store.MetricsRegistry;
 import com.github.xingjianluo.metricsalertenginejava.store.NotificationLog;
 import com.github.xingjianluo.metricsalertenginejava.store.RuleStore;
@@ -42,6 +44,19 @@ public class EngineConfig {
     }
 
     @Bean
+    public MetricDefinitionStore metricDefinitionStore() {
+        return new MetricDefinitionStore();
+    }
+
+    @Bean
+    public MetricDefinitionService metricDefinitionService(MetricDefinitionStore metricDefinitionStore,
+                                                           MetricsRegistry registry,
+                                                           EngineProperties properties,
+                                                           EngineClock clock) {
+        return new MetricDefinitionService(metricDefinitionStore, registry, properties, clock);
+    }
+
+    @Bean
     public AlertStateStore alertStateStore() {
         return new AlertStateStore();
     }
@@ -67,15 +82,17 @@ public class EngineConfig {
 
     @Bean
     public IngestionService ingestionService(TimeSeriesStore store, MetricsRegistry registry,
-                                             EngineProperties properties, EngineClock clock) {
-        IngestionService service = new IngestionService(store, registry, properties, clock);
+                                             EngineProperties properties, EngineClock clock,
+                                             MetricDefinitionService definitionService) {
+        IngestionService service =
+                new IngestionService(store, registry, properties, clock, definitionService);
         service.start();
         return service;
     }
 
     @Bean
-    public QueryService queryService(TimeSeriesStore store) {
-        return new QueryService(store);
+    public QueryService queryService(TimeSeriesStore store, MetricDefinitionStore definitionStore) {
+        return new QueryService(store, definitionStore);
     }
 
     @Bean

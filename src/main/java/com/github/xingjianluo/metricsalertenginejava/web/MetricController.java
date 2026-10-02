@@ -4,8 +4,9 @@ import com.github.xingjianluo.metricsalertenginejava.engine.EngineClock;
 import com.github.xingjianluo.metricsalertenginejava.engine.IngestionService;
 import com.github.xingjianluo.metricsalertenginejava.engine.QueryService;
 import com.github.xingjianluo.metricsalertenginejava.model.AggregateFunction;
+import com.github.xingjianluo.metricsalertenginejava.model.MetricQueryResult;
+import com.github.xingjianluo.metricsalertenginejava.model.MetricVersion;
 import com.github.xingjianluo.metricsalertenginejava.model.RejectReason;
-import com.github.xingjianluo.metricsalertenginejava.model.SeriesAggregation;
 import com.github.xingjianluo.metricsalertenginejava.model.WriteResult;
 import com.github.xingjianluo.metricsalertenginejava.store.MetricsRegistry;
 import com.github.xingjianluo.metricsalertenginejava.store.TimeSeriesStore;
@@ -17,10 +18,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
-/** 指标写入 / 聚合查询 / 容量与丢弃原因可观测 HTTP 接口。 */
+/** 指标写入 / 聚合查询（可按定义版本解读）/ 容量与丢弃原因可观测 HTTP 接口。 */
 @RestController
 @RequestMapping("/api/metrics")
 public class MetricController {
@@ -56,24 +57,39 @@ public class MetricController {
         return ResponseEntity.status(result.accepted() ? 202 : 422).body(result);
     }
 
+    /**
+     * 窗口聚合查询：
+     * <ul>
+     *   <li>{@code defVersion} 省略：用最新指标定义版本的默认聚合口径（未登记指标必须显式给 function）；</li>
+     *   <li>{@code defVersion=n}：用第 n 版历史定义解读同一批数据，结论可按版本复现；</li>
+     *   <li>{@code function} 显式给出时覆盖定义默认口径，返回里仍标明解析到的定义版本。</li>
+     * </ul>
+     */
     @GetMapping("/query")
-    public List<SeriesAggregation> query(@RequestParam String metric,
-                                         @RequestParam(defaultValue = "0") long from,
-                                         @RequestParam(defaultValue = "0") long to,
-                                         @RequestParam long windowMillis,
-                                         @RequestParam(defaultValue = "SUM") AggregateFunction function,
-                                         @RequestParam(required = false) Map<String, String> labels) {
+    public MetricQueryResult query(@RequestParam String metric,
+                                   @RequestParam(defaultValue = "0") long from,
+                                   @RequestParam(defaultValue = "0") long to,
+                                   @RequestParam long windowMillis,
+                                   @RequestParam(required = false) AggregateFunction function,
+                                   @RequestParam(required = false) Integer defVersion,
+                                   @RequestParam(required = false) Map<String, String> labels) {
         long toTs = to == 0 ? clock.nowMillis() : to;
-        return queryService.query(metric, labels, from, toTs, windowMillis, function);
+        MetricVersion requested = defVersion == null ? null : new MetricVersion(metric, defVersion);
+        return queryService.queryWithDefinition(metric, labels, from, toTs, windowMillis,
+                function, requested);
     }
 
     @GetMapping("/stats")
     public Map<String, Object> stats() {
-        return Map.of(
-                "totalSeries", store.totalSeriesCount(),
-                "totalSamples", store.totalSampleCount(),
-                "queueDepth", ingestion.queueDepth(),
-                "accepted", registry.acceptedCount(),
-                "rejected", registry.rejectedCounts());
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("totalSeries", store.totalSeriesCount());
+        out.put("totalSamples", store.totalSampleCount());
+        out.put("queueDepth", ingestion.queueDepth());
+        out.put("accepted", registry.acceptedCount());
+        out.put("rejected", registry.rejectedCounts());
+        out.put("definitionsCreated", registry.definitionsCreatedCount());
+        out.put("definitionsUpdated", registry.definitionsUpdatedCount());
+        out.put("definitionsRejected", registry.definitionsRejectedCount());
+        return out;
     }
 }
