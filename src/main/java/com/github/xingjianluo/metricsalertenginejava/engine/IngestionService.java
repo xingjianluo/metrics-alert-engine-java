@@ -2,13 +2,16 @@ package com.github.xingjianluo.metricsalertenginejava.engine;
 
 import com.github.xingjianluo.metricsalertenginejava.config.EngineProperties;
 import com.github.xingjianluo.metricsalertenginejava.model.Labels;
+import com.github.xingjianluo.metricsalertenginejava.model.MetricDefinition;
 import com.github.xingjianluo.metricsalertenginejava.model.RejectReason;
 import com.github.xingjianluo.metricsalertenginejava.model.Sample;
 import com.github.xingjianluo.metricsalertenginejava.model.WriteResult;
+import com.github.xingjianluo.metricsalertenginejava.store.MetricDefinitionStore;
 import com.github.xingjianluo.metricsalertenginejava.store.MetricsRegistry;
 import com.github.xingjianluo.metricsalertenginejava.store.TimeSeriesStore;
 
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
@@ -31,6 +34,7 @@ public class IngestionService implements AutoCloseable {
     private final MetricsRegistry registry;
     private final EngineProperties properties;
     private final EngineClock clock;
+    private final MetricDefinitionStore definitionStore;
     private final BlockingQueue<Task> queue;
 
     private volatile boolean started;
@@ -40,14 +44,25 @@ public class IngestionService implements AutoCloseable {
     private record Task(Sample sample, CompletableFuture<WriteResult> future) {
     }
 
+    /** 兼容构造：不带指标定义库（等价于全部指标未登记，走宽松写入）。 */
     public IngestionService(TimeSeriesStore store,
                             MetricsRegistry registry,
                             EngineProperties properties,
                             EngineClock clock) {
+        this(store, registry, properties, clock,
+                new MetricDefinitionStore(properties, clock, registry));
+    }
+
+    public IngestionService(TimeSeriesStore store,
+                            MetricsRegistry registry,
+                            EngineProperties properties,
+                            EngineClock clock,
+                            MetricDefinitionStore definitionStore) {
         this.store = store;
         this.registry = registry;
         this.properties = properties;
         this.clock = clock;
+        this.definitionStore = definitionStore;
         this.queue = new ArrayBlockingQueue<>(Math.max(1, properties.getIngestQueueCapacity()));
     }
 
@@ -124,6 +139,24 @@ public class IngestionService implements AutoCloseable {
         if (metric == null || !METRIC_NAME.matcher(metric).matches()) {
             return rejectBeforeQueue(RejectReason.INVALID_METRIC_NAME,
                     "invalid metric name: " + metric, sample);
+        }
+        // 指标定义校验（按提交时可见的最新版本）：值域 / 标签键越界明确拒绝，
+        // 原因与数据本身的非法（标签、时间戳等）可区分；未登记定义的指标走宽松模式。
+        Optional<MetricDefinition> definition = definitionStore.latest(metric);
+        if (definition.isPresent()) {
+            MetricDefinition def = definition.get();
+            if (!def.valueInRange(value)) {
+                return rejectBeforeQueue(RejectReason.VALUE_OUT_OF_RANGE,
+                        "value " + value + " out of range [" + def.minValue() + ","
+                                + def.maxValue() + "] per " + metric + "#v" + def.version(), sample);
+            }
+            for (String key : labels.asMap().keySet()) {
+                if (!def.labelKeyAllowed(key)) {
+                    return rejectBeforeQueue(RejectReason.LABEL_KEY_NOT_ALLOWED,
+                            "label key '" + key + "' not allowed per " + metric + "#v"
+                                    + def.version() + " allowed=" + def.allowedLabelKeys(), sample);
+                }
+            }
         }
         long now = clock.nowMillis();
         long earliest = now - properties.getRetentionMillis();

@@ -17,5 +17,9 @@ public enum RejectReason {
     /** 写入队列已满，按降级策略丢弃新数据（消费过慢） */
     QUEUE_FULL,
     /** 服务已关闭，拒绝新写入 */
-    SHUTDOWN
+    SHUTDOWN,
+    /** 值超出已登记指标定义（当前最新版本）允许的取值范围 */
+    VALUE_OUT_OF_RANGE,
+    /** 使用了已登记指标定义（当前最新版本）不允许的标签键 */
+    LABEL_KEY_NOT_ALLOWED
 }

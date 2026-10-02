@@ -22,6 +22,10 @@ public class EngineProperties {
     private int ingestQueueCapacity = 10_000;
     /** 是否在新时间线首次出现时拒绝（基数保护开关由存储侧使用）。 */
     private long evictionIntervalMillis = 300_000L;
+    /** 指标定义数量上限（超出后登记新指标定义被拒绝并计数）。 */
+    private int maxMetricDefinitions = 1000;
+    /** 单指标定义版本数量上限（超出后更新被拒绝并计数，旧版本仍可查）。 */
+    private int maxDefinitionVersionsPerMetric = 100;
 
     public int getMaxSeriesPerMetric() { return maxSeriesPerMetric; }
     public void setMaxSeriesPerMetric(int v) { this.maxSeriesPerMetric = v; }
@@ -37,4 +41,8 @@ public class EngineProperties {
     public void setIngestQueueCapacity(int v) { this.ingestQueueCapacity = v; }
     public long getEvictionIntervalMillis() { return evictionIntervalMillis; }
     public void setEvictionIntervalMillis(long v) { this.evictionIntervalMillis = v; }
+    public int getMaxMetricDefinitions() { return maxMetricDefinitions; }
+    public void setMaxMetricDefinitions(int v) { this.maxMetricDefinitions = v; }
+    public int getMaxDefinitionVersionsPerMetric() { return maxDefinitionVersionsPerMetric; }
+    public void setMaxDefinitionVersionsPerMetric(int v) { this.maxDefinitionVersionsPerMetric = v; }
 }

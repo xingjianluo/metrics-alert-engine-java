@@ -18,6 +18,8 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.NavigableMap;
 import java.util.TreeMap;
+import java.util.function.DoublePredicate;
+import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
 /**
@@ -120,6 +122,23 @@ public class TimeSeriesStore {
                                          long toMillis,
                                          long windowMillis,
                                          AggregateFunction function) {
+        return query(metric, selectors, fromMillis, toMillis, windowMillis, function,
+                labels -> true, value -> true);
+    }
+
+    /**
+     * 带解读口径的聚合查询：{@code seriesFilter} 决定哪些时间线纳入解读（如按指标定义
+     * 允许的标签键过滤），{@code valueFilter} 决定哪些点计入聚合（如按定义的值域过滤）。
+     * 过滤在某个时刻的点快照上进行，因此同一次查询的解读自洽。
+     */
+    public List<SeriesAggregation> query(String metric,
+                                         Map<String, String> selectors,
+                                         long fromMillis,
+                                         long toMillis,
+                                         long windowMillis,
+                                         AggregateFunction function,
+                                         Predicate<Labels> seriesFilter,
+                                         DoublePredicate valueFilter) {
         if (windowMillis <= 0) {
             throw new IllegalArgumentException("windowMillis must be positive");
         }
@@ -128,8 +147,12 @@ public class TimeSeriesStore {
         }
         List<SeriesAggregation> results = new ArrayList<>();
         for (SeriesSnapshot snapshot : snapshotMatching(metric, selectors)) {
-            List<SeriesAggregation.WindowValue> windows = aggregate(snapshot.points(),
-                    fromMillis, toMillis, windowMillis, function);
+            if (!seriesFilter.test(snapshot.labels())) {
+                continue;
+            }
+            NavigableMap<Long, Double> points = snapshot.points();
+            List<SeriesAggregation.WindowValue> windows = aggregate(points,
+                    fromMillis, toMillis, windowMillis, function, valueFilter);
             results.add(new SeriesAggregation(metric, snapshot.labels(), windows));
         }
         results.sort(Comparator.comparing(s -> s.labels().canonicalString()));
@@ -138,7 +161,8 @@ public class TimeSeriesStore {
 
     private List<SeriesAggregation.WindowValue> aggregate(NavigableMap<Long, Double> points,
                                                           long from, long to, long window,
-                                                          AggregateFunction function) {
+                                                          AggregateFunction function,
+                                                          DoublePredicate valueFilter) {
         List<SeriesAggregation.WindowValue> out = new ArrayList<>();
         long firstStart = floorWindow(from, window);
         for (long start = firstStart; start < to; start += window) {
@@ -147,7 +171,11 @@ public class TimeSeriesStore {
             // [start,end) 且与查询范围 [from,to) 相交的点
             Map<Long, Double> in = points.subMap(Math.max(start, from), true,
                     Math.min(end, to) - 1, true);
-            in.forEach((t, v) -> stats.add(v, t));
+            in.forEach((t, v) -> {
+                if (valueFilter.test(v)) {
+                    stats.add(v, t);
+                }
+            });
             if (stats.count() == 0) {
                 out.add(new SeriesAggregation.WindowValue(start, end, Double.NaN, true, 0));
             } else {

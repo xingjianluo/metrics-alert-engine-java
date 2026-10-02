@@ -4,8 +4,8 @@ import com.github.xingjianluo.metricsalertenginejava.engine.EngineClock;
 import com.github.xingjianluo.metricsalertenginejava.engine.IngestionService;
 import com.github.xingjianluo.metricsalertenginejava.engine.QueryService;
 import com.github.xingjianluo.metricsalertenginejava.model.AggregateFunction;
+import com.github.xingjianluo.metricsalertenginejava.model.MetricQueryResult;
 import com.github.xingjianluo.metricsalertenginejava.model.RejectReason;
-import com.github.xingjianluo.metricsalertenginejava.model.SeriesAggregation;
 import com.github.xingjianluo.metricsalertenginejava.model.WriteResult;
 import com.github.xingjianluo.metricsalertenginejava.store.MetricsRegistry;
 import com.github.xingjianluo.metricsalertenginejava.store.TimeSeriesStore;
@@ -17,7 +17,6 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.List;
 import java.util.Map;
 
 /** 指标写入 / 聚合查询 / 容量与丢弃原因可观测 HTTP 接口。 */
@@ -57,14 +56,16 @@ public class MetricController {
     }
 
     @GetMapping("/query")
-    public List<SeriesAggregation> query(@RequestParam String metric,
-                                         @RequestParam(defaultValue = "0") long from,
-                                         @RequestParam(defaultValue = "0") long to,
-                                         @RequestParam long windowMillis,
-                                         @RequestParam(defaultValue = "SUM") AggregateFunction function,
-                                         @RequestParam(required = false) Map<String, String> labels) {
+    public MetricQueryResult query(@RequestParam String metric,
+                                   @RequestParam(defaultValue = "0") long from,
+                                   @RequestParam(defaultValue = "0") long to,
+                                   @RequestParam long windowMillis,
+                                   @RequestParam(required = false) AggregateFunction function,
+                                   @RequestParam(required = false) Integer definitionVersion,
+                                   @RequestParam(required = false) Map<String, String> labels) {
         long toTs = to == 0 ? clock.nowMillis() : to;
-        return queryService.query(metric, labels, from, toTs, windowMillis, function);
+        return queryService.queryWithDefinition(metric, labels, from, toTs, windowMillis,
+                function, definitionVersion);
     }
 
     @GetMapping("/stats")
@@ -74,6 +75,7 @@ public class MetricController {
                 "totalSamples", store.totalSampleCount(),
                 "queueDepth", ingestion.queueDepth(),
                 "accepted", registry.acceptedCount(),
-                "rejected", registry.rejectedCounts());
+                "rejected", registry.rejectedCounts(),
+                "definitionLimitRejected", registry.definitionLimitRejectedCount());
     }
 }

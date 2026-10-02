@@ -8,6 +8,7 @@ import com.github.xingjianluo.metricsalertenginejava.engine.QueryService;
 import com.github.xingjianluo.metricsalertenginejava.engine.RetentionService;
 import com.github.xingjianluo.metricsalertenginejava.engine.SystemEngineClock;
 import com.github.xingjianluo.metricsalertenginejava.store.AlertStateStore;
+import com.github.xingjianluo.metricsalertenginejava.store.MetricDefinitionStore;
 import com.github.xingjianluo.metricsalertenginejava.store.MetricsRegistry;
 import com.github.xingjianluo.metricsalertenginejava.store.NotificationLog;
 import com.github.xingjianluo.metricsalertenginejava.store.RuleStore;
@@ -42,6 +43,13 @@ public class EngineConfig {
     }
 
     @Bean
+    public MetricDefinitionStore metricDefinitionStore(EngineProperties properties,
+                                                       EngineClock clock,
+                                                       MetricsRegistry registry) {
+        return new MetricDefinitionStore(properties, clock, registry);
+    }
+
+    @Bean
     public AlertStateStore alertStateStore() {
         return new AlertStateStore();
     }
@@ -67,15 +75,17 @@ public class EngineConfig {
 
     @Bean
     public IngestionService ingestionService(TimeSeriesStore store, MetricsRegistry registry,
-                                             EngineProperties properties, EngineClock clock) {
-        IngestionService service = new IngestionService(store, registry, properties, clock);
+                                             EngineProperties properties, EngineClock clock,
+                                             MetricDefinitionStore definitionStore) {
+        IngestionService service = new IngestionService(store, registry, properties, clock,
+                definitionStore);
         service.start();
         return service;
     }
 
     @Bean
-    public QueryService queryService(TimeSeriesStore store) {
-        return new QueryService(store);
+    public QueryService queryService(TimeSeriesStore store, MetricDefinitionStore definitionStore) {
+        return new QueryService(store, definitionStore);
     }
 
     @Bean

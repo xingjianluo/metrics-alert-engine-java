@@ -13,6 +13,8 @@ public class MetricsRegistry {
 
     private final AtomicLong accepted = new AtomicLong();
     private final EnumMap<RejectReason, AtomicLong> rejected = new EnumMap<>(RejectReason.class);
+    /** 指标定义登记 / 更新因容量上限被拒绝的次数（控制面拒绝，与数据面拒绝区分）。 */
+    private final AtomicLong definitionLimitRejected = new AtomicLong();
 
     public MetricsRegistry() {
         for (RejectReason reason : RejectReason.values()) {
@@ -26,6 +28,15 @@ public class MetricsRegistry {
 
     public void recordRejected(RejectReason reason) {
         rejected.get(reason).incrementAndGet();
+    }
+
+    /** 记录一次指标定义容量超限拒绝（登记新定义或新增版本被拒）。 */
+    public void recordDefinitionLimitRejected() {
+        definitionLimitRejected.incrementAndGet();
+    }
+
+    public long definitionLimitRejectedCount() {
+        return definitionLimitRejected.get();
     }
 
     public long acceptedCount() {
