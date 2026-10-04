@@ -89,6 +89,35 @@ class AlertStateMachineTest {
     }
 
     @Test
+    void pendingWithInterveningMissAndForThresholdOneNeedsOneMoreHit() {
+        // 文档 3.2 的精确边界：forThreshold=1 时，PENDING 中途夹一个未达恢复阈值的不满足窗口，
+        // 之后第一个满足窗口只把连续命中数重新顶回 forThreshold（保持 PENDING），再满足一次才 FIRING。
+        AlertRule rule = ruleStore.register("cpu_edge", new RuleStore.RuleSpec(
+                "cpu", Map.of(), W, AggregateFunction.AVG, ComparisonOperator.GT, 80.0,
+                1, 2, 0));
+        log.info("[规则] {} metric=cpu AVG>80 for=1 recovery=2（边界：PENDING 夹不满足）", rule.version());
+        put(90, T0);           // w10 满足
+        put(10, T0 + 1000);    // w11 不满足（misses=1 < recovery=2）
+        put(90, T0 + 2000);    // w12 满足
+        put(90, T0 + 3000);    // w13 满足
+
+        assertEquals(AlertState.PENDING, eval(rule, T0).toState());         // hit 1 == for=1 -> PENDING
+        AlertEvaluation miss = eval(rule, T0 + W);
+        assertEquals(AlertState.PENDING, miss.toState());                   // 不满足但未达恢复阈值，保持 PENDING
+        assertEquals(1, miss.consecutiveMisses());
+        AlertEvaluation rehit = eval(rule, T0 + 2 * W);
+        // 边界：命中数重新等于 forThreshold=1，保持 PENDING 而不是直接 FIRING。
+        assertEquals(AlertState.PENDING, rehit.toState());
+        assertEquals(1, rehit.consecutiveHits());
+        assertEquals(AlertState.FIRING, eval(rule, T0 + 3 * W).toState());  // 再满足一次 -> FIRING
+        long firingNotes = notificationLog.all().stream()
+                .filter(n -> n.type() == Notification.Type.FIRING && !n.suppressed()).count();
+        assertEquals(1, firingNotes, "整个序列只应在最终进入 FIRING 时通知一次");
+        log.info("[判定] for=1 边界：PENDING-不满足-PENDING-满足(保持PENDING)-满足->FIRING，通知数={}",
+                firingNotes);
+    }
+
+    @Test
     void stateTransitionsAreDeterministic() {
         AlertRule rule = registerRule(0);
         put(90, T0);           // w10 满足

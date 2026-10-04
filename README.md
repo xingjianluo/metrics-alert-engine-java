@@ -84,8 +84,13 @@ createdAtMillis
 - **未登记定义的指标完全照旧**：任意有限值、任意格式合法的标签键都正常写入，
   不因为引入这套能力而让原来能写的调用方突然写不进去。其写入结论
   `definitionVersion=null`。
+- 查询侧同样宽松：未登记指标不做任何口径过滤，显式给 `function` 即可正常聚合
+  （不给则明确报错提示必须提供，见 1.5）。
 - 已登记定义的指标才启用口径校验；白名单为**空集时同样表示不限制标签键**
   （与未登记一致），此时只按取值范围校验。
+- 定义本身的容量上限（指标数 / 单指标版本数）与超限时的显式拒绝策略见第 4 节；
+  上述兼容与容量行为由 `DefinitionIngestionValidationTest`、`DefinitionVersionQueryTest`、
+  `MetricDefinitionTest` 覆盖（见第 6 节）。
 
 **写入校验如何选取版本（并发交错下保持自洽）：**
 
@@ -98,14 +103,34 @@ createdAtMillis
 
 ### 1.5 按指标定义版本复现查询结论
 
-同一批**已经落库的数据只存一份**，但可以用不同版本的定义来解读：
+同一批**已经落库的数据只存一份**，但可以用不同版本的定义来解读。
+按某个历史版本查询时，该版本的**完整口径**同时生效，而不是只换聚合算子：
 
-- 查询参数 `defVersion=n`：用第 n 版历史定义的**默认聚合口径**聚合同一批点，
+- **默认聚合口径**：查询不显式给 `function` 时，用所解析版本的 `defaultAggregation`。
+- **取值范围**：该版本 `minValue/maxValue` 之外（含 `NaN`/无穷大）的点**不参与聚合**——
+  正是“这一版当时不会接受”的点。窗口的 `sampleCount` 只统计通过过滤的点，
+  因此按某版本聚合到的点数 == 落库数据中该版本会接受的点数（计数守恒）。
+- **标签键白名单**：用到了该版本 `allowedLabelKeys` 之外标签键的**整条时间线不进结果**
+  （空集白名单 = 不限制，与未登记一致）。
+
+具体行为：
+
+- 查询参数 `defVersion=n`：用第 n 版历史定义的完整口径解读同一批点，
   结论与该版本当时一致；数据没变，口径回放到了旧版本。
-- 不指定 `defVersion`：走**当前最新定义版本**的默认聚合口径。
-- 指标从未登记定义：必须显式给 `function`（保持宽松模式），结果中
+  典型场景：口径从窄放宽（量程变大、白名单加了键）之后写进了旧版本会拒绝的数据，
+  再按旧版本 `defVersion` 回看，越界点和多出来的标签键时间线都被排除，
+  复现出的结论与当时完全一致。
+- 不指定 `defVersion`：走**当前最新定义版本**的完整口径。
+- 指标从未登记定义：保持宽松——不做任何口径过滤，但必须显式给 `function`，结果中
   `definitionVersion=null, definitionRegistered=false`。
-- 显式给了 `function` 时覆盖定义默认口径，但返回结果仍标明解析到的定义版本。
+- 显式给了 `function` 时覆盖定义默认聚合口径（范围与白名单过滤仍按所解析版本生效），
+  返回结果仍标明解析到的定义版本。
+- **口径自洽**：定义版本在查询开始时一次性解析（定义是不可变记录），
+  单次查询从头到尾依据同一版口径；定义更新与查询并发交错时，
+  不会出现“一半按旧口径、一半按新口径”的半成品结果。
+- **明确报错**：`defVersion` 指向不存在的版本，或版本号不属于所查指标时，
+  查询以 `IllegalArgumentException` 失败（HTTP 400，body 含 `error/reason=INVALID_ARGUMENT`），
+  绝不静默套用别的口径返回错误结论。
 - 返回体 `MetricQueryResult` 明确包含：`definitionVersion`（本次实际使用的版本）、
   `definitionRegistered`、`function`（实际生效的算子）与各时间线窗口序列。
 
@@ -164,6 +189,10 @@ NORMAL ────────────────────────�
 
 1. **触发**：连续满足达到 `forThreshold` → `PENDING`；此后再连续满足一个窗口 → `FIRING`，
    此时发且仅发一次 `FIRING` 通知。`PENDING` 本身不通知（“待定”态）。
+   精确边界：`PENDING` 下某个满足窗口若恰好使连续命中数重新等于 `forThreshold`
+   （只可能出现在 `forThreshold=1` 且中途夹了未达恢复阈值的不满足窗口时），
+   该窗口保持 `PENDING`，需再满足一次才进 `FIRING`；
+   中途的不满足窗口会把连续命中计数清零、同时累计恢复计数。
 2. **恢复**：`FIRING/PENDING` 后连续不满足达到 `recoveryThreshold` → `RECOVERING`；
    此后再不满足一个窗口 → `NORMAL`，发一次 `RECOVERED` 通知。
 3. **抖动不重复触发**：`RECOVERING` 中途再次满足，立即回到 `FIRING`，但**不发第二次通知**；
@@ -217,7 +246,7 @@ NORMAL ────────────────────────�
 | 方法 & 路径 | 说明 |
 | --- | --- |
 | `POST /api/metrics/write` | 写入一条采样（202 接受；422 拒绝，body 含 `reason/detail/definitionVersion`） |
-| `GET  /api/metrics/query?metric&from&to&windowMillis&function&defVersion&labels...` | 窗口聚合查询；`function` 可省略（按定义默认口径），`defVersion` 指定历史定义版本，返回 `MetricQueryResult`（含所用版本） |
+| `GET  /api/metrics/query?metric&from&to&windowMillis&function&defVersion&labels...` | 窗口聚合查询；`function` 可省略（按所解析定义版本的默认口径），`defVersion` 指定历史定义版本（该版本完整口径生效：默认聚合 + 取值范围过滤点 + 标签键白名单过滤时间线），返回 `MetricQueryResult`（含所用版本）；版本不存在或与指标对不上时 400 |
 | `GET  /api/metrics/stats` | 容量、各类拒绝原因计数与指标定义操作计数 |
 | `POST /api/metric-definitions` | 登记指标定义（v1）；重复登记 4xx，容量超限 422 |
 | `PUT  /api/metric-definitions` | 更新定义（产生新版本；不存在则登记为 v1）；版本数超限 422 且旧版本保留 |
@@ -234,6 +263,11 @@ NORMAL ────────────────────────�
 | `GET  /api/rules/notifications` | 全部通知（含被静默抑制的） |
 
 写入示例：
+
+> 非法入参（不存在的定义版本、版本与指标对不上、未登记指标未给 `function` 等）
+> 由全局异常处理统一返回 **400**，body 形如
+> `{"error":"metric definition version not found: cpu#def-v99","reason":"INVALID_ARGUMENT"}`，
+> 绝不静默返回可能误导的结论。
 
 ```bash
 curl -XPOST localhost:8080/api/metrics/write -H 'Content-Type: application/json' \
@@ -285,21 +319,21 @@ curl 'localhost:8080/api/metrics/query?metric=cpu&from=10000&to=11000&windowMill
 mvn test
 ```
 
-共 40 个测试，覆盖：
+共 47 个测试，覆盖：
 
 | 测试类 | 场景 |
 | --- | --- |
 | `LabelsAndStatsTest` | 标签规范串确定性 / 非法标签 / 窗口去重统计 |
 | `TimeSeriesStoreTest` | **窗口边界（半开、对齐）**、空窗口标记、乱序与重复、标签隔离、时间戳越界、基数上限 |
-| `AlertStateMachineTest` | NORMAL→PENDING→FIRING→RECOVERING→NORMAL、**抖动不重复触发**、重复窗口幂等、**静默只抑制不影响状态** |
+| `AlertStateMachineTest` | NORMAL→PENDING→FIRING→RECOVERING→NORMAL、**抖动不重复触发**、重复窗口幂等、**静默只抑制不影响状态**、**forThreshold=1 且 PENDING 夹不满足窗口的触发边界** |
 | `RuleVersioningTest` | 更新产生新版本、历史结论按版本复现、版本间状态隔离 |
 | `IngestionServiceTest` | 入队前拒绝、**队列满降级 QUEUE_FULL 且不阻塞**、**并发写入计数守恒** |
 | `ConcurrentEvaluationTest` | **并发求值**每组合每窗口恰好迁移一次、通知不重复 |
 | `SnapshotAndRetentionTest` | **并发写查快照自洽**（计数不变量）、保留期淘汰与空时间线清理 |
 | `MetricDefinitionTest` | 定义创建/更新版本化、**旧版本永久可取回**、非法 Spec 不入库、**指标数/版本数上限显式拒绝并计数** |
 | `DefinitionIngestionValidationTest` | **值域越界 / 标签键越界被可区分拒绝**、未登记指标宽松兼容、空白名单不限制、边界值合法、口径更新后同值结论翻转、结果带版本号 |
-| `DefinitionVersionQueryTest` | **同批数据 v1/v2 口径结论可复现**（AVG 75 vs MAX 90）、不指定版本走最新、未登记需显式算子、显式算子覆盖但仍报版本 |
-| `DefinitionConcurrencyTest` | **定义更新与写入交错下计数守恒**（总判定=接受+拒绝=落库点数）、拒绝只来自定义口径、并发更新版本号唯一连续、并发查询版本与算子始终自洽 |
+| `DefinitionVersionQueryTest` | **同批数据 v1/v2 口径结论可复现**（AVG 75 vs MAX 90）、**口径放宽后按旧版本复现历史结论（越界点被排除 + 多出的标签键时间线被排除）**、按版本聚合点数与落库数据守恒、不指定版本走最新、未登记指标宽松写查（需显式算子）、显式算子覆盖但仍报版本、旧版本定义逐条取回、**不存在版本 / 版本与指标不符明确报错** |
+| `DefinitionConcurrencyTest` | **定义更新与写入交错下计数守恒**（总判定=接受+拒绝=落库点数）、拒绝只来自定义口径、并发更新版本号唯一连续、并发查询版本与算子始终自洽、**放宽交错期间钉死旧版本查询只看到旧口径数据（越界值/非法标签键永不出现）且两版聚合点数分别守恒** |
 
 断言要点：**计数守恒**（accepted = 落库点数；有效迁移数 = 组合数 × 窗口数；
 定义交错下 总写入 = accepted + 各类 rejected）、
@@ -329,8 +363,12 @@ ls target/surefire-reports/
 [定义] 首次登记 cpu -> cpu#def-v1 口径=AVG 范围=[0.0,100.0] 标签白名单=[host, region]
 [输入] 同一批落库数据 60.0,90.0；v1 默认口径 AVG，v2 默认口径 MAX
 [判定] v1 结论 value=75.0 版本=cpu#def-v1；v2 结论 value=90.0 版本=cpu#def-v2；不指定版本->cpu#def-v2
+[输入] 落库 4 点：host=a {60,90}（v1 时期）+ host=a {150}（v1 越界）+ {host=b,rack=r1} 70（v1 不允许的标签键）
+[判定] 按 v1 复现：series={host="a"} value=75.0 sampleCount=2（越界点与 rack 时间线均被排除）
+[判定] 查询不存在的版本 cpu#def-v99 -> 报错依据=metric definition version not found: cpu#def-v99
 [判定] value=100.01 被拒绝 reason=DEFINITION_VALUE_OUT_OF_RANGE（区别于 INVALID_* 数据问题）
 [守恒] accepted(registry)==结论接受==落库点数；总判定 == accepted + 各原因 rejected（定义更新交错，不重不漏）
+[守恒] 落库=650；按 v1 聚合点数=250（== 期望值），按 v2 聚合点数=650 == 落库数
 ```
 
 ### 6.3 手动联调
@@ -360,5 +398,5 @@ engine/   IngestionService（有界队列+单worker+降级+定义口径校验）
           RetentionService, EngineClock
 config/   EngineProperties, EngineConfig（Spring 装配）
 web/      MetricController（写入/版本化查询/stats）, MetricDefinitionController（定义管理）,
-          RuleController
+          RuleController, ApiExceptionHandler（非法入参统一 400，不静默给错误结论）
 ```

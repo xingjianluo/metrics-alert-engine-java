@@ -273,6 +273,103 @@ class DefinitionConcurrencyTest {
                 checked.get());
     }
 
+    @Test
+    void pinnedHistoricalVersionQueryStaysConsistentUnderConcurrentRelaxation() throws Exception {
+        // v1 窄口径：范围 [0,100]，白名单 {host}；随后并发放宽到 v2：[0,200]、{host,rack}。
+        definitions.register("cpu", new MetricDefinition.Spec("%", "v1",
+                AggregateFunction.AVG, 0.0, 100.0, Set.of("host")));
+        // v1 时期的基线数据：50 个 host-only、值 50 的点。
+        for (int i = 0; i < 50; i++) {
+            ingestion.submit("cpu", Map.of("host", "h"), 50.0, T0 + i).join();
+        }
+        com.github.xingjianluo.metricsalertenginejava.engine.QueryService q =
+                new com.github.xingjianluo.metricsalertenginejava.engine.QueryService(store, defStore);
+        long from = T0;
+        long to = T0 + 2000;
+        long window = 2000;
+
+        int writes = 600;
+        ConcurrentLinkedQueue<WriteResult> results = new ConcurrentLinkedQueue<>();
+        ExecutorService pool = Executors.newFixedThreadPool(3);
+        CyclicBarrier barrier = new CyclicBarrier(3);
+        AtomicInteger queryChecks = new AtomicInteger();
+
+        // 更新线程：起跑后把口径放宽到 v2。
+        pool.submit(() -> {
+            await(barrier);
+            definitions.update("cpu", new MetricDefinition.Spec("%", "v2",
+                    AggregateFunction.AVG, 0.0, 200.0, Set.of("host", "rack")));
+            log.info("[交错] 定义放宽到 v2：max=200 白名单={{host,rack}}");
+        });
+        // 写入线程：三类点混合——v1 可接受(70/host-only)、v1 越界(150)、v1 非法标签键(rack)。
+        pool.submit(() -> {
+            await(barrier);
+            for (int i = 0; i < writes; i++) {
+                double value = switch (i % 3) {
+                    case 0 -> 70.0;
+                    case 1 -> 150.0;
+                    default -> 80.0;
+                };
+                Map<String, String> labels = (i % 3 == 2)
+                        ? Map.of("host", "h", "rack", "r" + (i % 4))
+                        : Map.of("host", "h");
+                results.add(ingestion.submit("cpu", labels, value, T0 + 1000 + i).join());
+            }
+        });
+        // 查询线程：钉死 v1 + 显式 MAX，反复查询；v1 口径下绝不能看到越界值或 rack 时间线。
+        pool.submit(() -> {
+            await(barrier);
+            for (int i = 0; i < 400; i++) {
+                var r = q.queryWithDefinition("cpu", Map.of(), from, to, window,
+                        com.github.xingjianluo.metricsalertenginejava.model.AggregateFunction.MAX,
+                        new MetricVersion("cpu", 1));
+                assertEquals(new MetricVersion("cpu", 1), r.definitionVersion());
+                for (var series : r.series()) {
+                    assertTrue(series.labels().asMap().keySet().equals(Set.of("host")),
+                            "v1 白名单外标签键的时间线不得出现: " + series.labels());
+                    for (var w : series.windows()) {
+                        if (!w.missing()) {
+                            assertTrue(w.value() <= 100.0,
+                                    "v1 口径下越界点不得参与聚合, value=" + w.value());
+                        }
+                    }
+                }
+                queryChecks.incrementAndGet();
+            }
+        });
+        pool.shutdown();
+        assertTrue(pool.awaitTermination(30, TimeUnit.SECONDS));
+        assertEquals(writes, results.size(), "每条写入都必须有明确结论");
+        log.info("[交错] 放宽期间完成 {} 次钉死 v1 的查询，全部只看到 v1 口径内的数据", queryChecks.get());
+
+        // 计数守恒：结论数 == registry 计数；落库点数 == 接受数。
+        long accepted = results.stream().filter(WriteResult::accepted).count();
+        long rejected = writes - accepted;
+        assertEquals(accepted, registry.acceptedCount() - 50);
+        assertEquals(accepted, store.totalSampleCount() - 50);
+        assertEquals(writes + 50, registry.acceptedCount() + registry.rejectedTotal());
+        log.info("[守恒] 写入结论 accepted={} rejected={}；落库点={} == 接受数+基线50",
+                accepted, rejected, store.totalSampleCount());
+
+        // 查询侧计数与落库数据对得上：
+        // 按 v2（最新）聚合到的点数 == 全部落库点；按 v1 == 落库点中 v1 会接受的点数。
+        long expectedV1 = 50 + results.stream().filter(WriteResult::accepted)
+                .filter(r -> r.sample().value() <= 100.0)
+                .filter(r -> r.sample().labels().asMap().keySet().equals(Set.of("host")))
+                .count();
+        long v1Count = q.queryWithDefinition("cpu", Map.of(), from, to, window,
+                        null, new MetricVersion("cpu", 1))
+                .series().stream().flatMap(s -> s.windows().stream())
+                .mapToLong(w -> w.sampleCount()).sum();
+        long v2Count = q.queryWithDefinition("cpu", Map.of(), from, to, window, null, null)
+                .series().stream().flatMap(s -> s.windows().stream())
+                .mapToLong(w -> w.sampleCount()).sum();
+        assertEquals(expectedV1, v1Count, "按 v1 聚合点数必须等于落库点中 v1 会接受的点数");
+        assertEquals(store.totalSampleCount(), v2Count, "按最新版本聚合点数必须等于全部落库点");
+        log.info("[守恒] 落库={}；按 v1 聚合点数={}（== 期望值 {}），按 v2 聚合点数={} == 落库数",
+                store.totalSampleCount(), v1Count, expectedV1, v2Count);
+    }
+
     private static void await(CyclicBarrier barrier) {
         try {
             barrier.await();

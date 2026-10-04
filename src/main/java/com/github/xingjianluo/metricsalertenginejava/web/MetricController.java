@@ -60,9 +60,12 @@ public class MetricController {
     /**
      * 窗口聚合查询：
      * <ul>
-     *   <li>{@code defVersion} 省略：用最新指标定义版本的默认聚合口径（未登记指标必须显式给 function）；</li>
-     *   <li>{@code defVersion=n}：用第 n 版历史定义解读同一批数据，结论可按版本复现；</li>
-     *   <li>{@code function} 显式给出时覆盖定义默认口径，返回里仍标明解析到的定义版本。</li>
+     *   <li>{@code defVersion} 省略：用最新指标定义版本的完整口径（默认聚合 + 取值范围过滤点
+     *       + 标签键白名单过滤时间线；未登记指标不做口径过滤，但必须显式给 function）；</li>
+     *   <li>{@code defVersion=n}：用第 n 版历史定义的完整口径解读同一批数据，结论可按版本复现；
+     *       版本不存在或与指标对不上时返回 400，不静默给错误结论；</li>
+     *   <li>{@code function} 显式给出时覆盖定义默认聚合口径（范围与白名单过滤仍生效），
+     *       返回里仍标明解析到的定义版本。</li>
      * </ul>
      */
     @GetMapping("/query")
