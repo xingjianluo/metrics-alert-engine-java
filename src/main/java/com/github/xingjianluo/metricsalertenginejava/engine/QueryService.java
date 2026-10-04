@@ -8,8 +8,12 @@ import com.github.xingjianluo.metricsalertenginejava.model.SeriesAggregation;
 import com.github.xingjianluo.metricsalertenginejava.store.MetricDefinitionStore;
 import com.github.xingjianluo.metricsalertenginejava.store.TimeSeriesStore;
 
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableMap;
+import java.util.TreeMap;
 
 /**
  * 查询服务：委托存储在时间线点快照上做滚动窗口聚合。
@@ -17,10 +21,15 @@ import java.util.Map;
  *
  * <p>指标定义版本语义：
  * <ul>
- *   <li>指定 {@code definitionVersion}：用该历史版本的默认聚合口径解读同一批已落库数据，
+ *   <li>指定 {@code definitionVersion}：用该历史版本的<b>完整口径</b>解读同一批已落库数据——
+ *       默认聚合、取值范围、标签键白名单三者同时生效：该版本不会接受的点（越界值）
+ *       与不会接受的时间线（含白名单外标签键）都不进入结果，
  *       结论与该版本当时一致（数据不变，口径回放到旧版本）；</li>
- *   <li>不指定版本：走当前最新定义版本的默认聚合口径；</li>
- *   <li>指标从未登记定义：必须显式提供 {@code function}，保持宽松模式，版本标记为 null；</li>
+ *   <li>不指定版本：走当前最新定义版本的完整口径；</li>
+ *   <li>指标从未登记定义：必须显式提供 {@code function}，保持宽松模式（不过滤点与时间线），
+ *       版本标记为 null；</li>
+ *   <li>单次查询只解析一次定义版本，整个结果（算子 + 过滤口径 + 版本标记）整体自洽，
+ *       并发定义更新不会让一次查询一半按旧口径一半按新口径；</li>
  *   <li>返回的 {@link MetricQueryResult} 明确标出本次使用的定义版本与实际算子。</li>
  * </ul>
  */
@@ -72,11 +81,57 @@ public class QueryService {
             }
             effectiveFunction = definition.defaultAggregation();
         }
-        List<SeriesAggregation> series =
-                store.query(metric, selectors, fromMillis, toMillis, windowMillis, effectiveFunction);
+        List<SeriesAggregation> series = definition == null
+                // 未登记定义：宽松路径，不过滤任何点与时间线（与接入定义能力前一致）。
+                ? store.query(metric, selectors, fromMillis, toMillis, windowMillis, effectiveFunction)
+                // 已登记定义：按解析到的这一版完整口径（值域 + 标签键白名单）过滤后再聚合。
+                : queryUnderDefinition(metric, selectors, fromMillis, toMillis, windowMillis,
+                        effectiveFunction, definition);
         MetricVersion resolvedVersion = definition == null ? null : definition.version();
         return new MetricQueryResult(metric, resolvedVersion, definition != null,
                 effectiveFunction, series);
+    }
+
+    /**
+     * 按某一版定义的完整口径解读已落库数据：
+     * <ul>
+     *   <li>标签键白名单启用时，含有白名单外标签键的<b>整条时间线</b>被排除
+     *       （该版本当时不会接受这条时间线的写入）；</li>
+     *   <li>声明了取值范围时，范围外的<b>单个点</b>被剔除
+     *       （该版本当时不会接受这个点，含 NaN/无穷大）；</li>
+     *   <li>剩余点在快照上聚合，与并发写入/定义更新互不影响。</li>
+     * </ul>
+     */
+    private List<SeriesAggregation> queryUnderDefinition(String metric,
+                                                         Map<String, String> selectors,
+                                                         long fromMillis,
+                                                         long toMillis,
+                                                         long windowMillis,
+                                                         AggregateFunction function,
+                                                         MetricDefinition definition) {
+        List<SeriesAggregation> results = new ArrayList<>();
+        for (TimeSeriesStore.SeriesSnapshot snapshot : store.snapshotMatching(metric, selectors)) {
+            // 时间线级过滤：该版本白名单之外的标签键 -> 整条线不计入。
+            if (!definition.disallowedKeys(snapshot.labels()).isEmpty()) {
+                continue;
+            }
+            // 点级过滤：该版本值域之外的点 -> 不计入（未声明范围时不过滤）。
+            NavigableMap<Long, Double> points = snapshot.points();
+            if (definition.hasValueRange()) {
+                NavigableMap<Long, Double> inRange = new TreeMap<>();
+                points.forEach((t, v) -> {
+                    if (definition.isValueInRange(v)) {
+                        inRange.put(t, v);
+                    }
+                });
+                points = inRange;
+            }
+            List<SeriesAggregation.WindowValue> windows = store.aggregateWindows(points,
+                    fromMillis, toMillis, windowMillis, function);
+            results.add(new SeriesAggregation(metric, snapshot.labels(), windows));
+        }
+        results.sort(Comparator.comparing(s -> s.labels().canonicalString()));
+        return results;
     }
 
     private MetricDefinition resolveDefinition(String metric, MetricVersion requested) {

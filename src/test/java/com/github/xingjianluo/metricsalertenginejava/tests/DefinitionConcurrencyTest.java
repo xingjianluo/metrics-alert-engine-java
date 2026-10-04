@@ -273,6 +273,69 @@ class DefinitionConcurrencyTest {
                 checked.get());
     }
 
+    @Test
+    void pinnedVersionQueryStaysSelfConsistentWhileUpdatesAndWritesInterleave() throws Exception {
+        // v1：AVG，范围 [0,100]，白名单 [host]；后续版本在放宽/收紧间交替。
+        definitions.register("cpu", new MetricDefinition.Spec("%", "v1",
+                AggregateFunction.AVG, 0.0, 100.0, Set.of("host")));
+
+        ExecutorService pool = Executors.newFixedThreadPool(3);
+        CyclicBarrier barrier = new CyclicBarrier(3);
+        AtomicInteger checks = new AtomicInteger();
+
+        // 写入线程：持续写入 v1 会拒绝的数据（越界值 150、白名单外标签键 rack）与合法数据（50）。
+        pool.submit(() -> {
+            await(barrier);
+            for (int i = 0; i < 600; i++) {
+                double value = (i % 2 == 0) ? 150.0 : 50.0;
+                Map<String, String> labels = (i % 3 == 0)
+                        ? Map.of("host", "h", "rack", "r" + (i % 2))
+                        : Map.of("host", "h");
+                ingestion.submit("cpu", labels, value, clock.nowMillis() - 1 - i).join();
+            }
+        });
+        // 更新线程：反复改口径（偶数版放宽到 [0,200]+[host,rack]，奇数版收回 v1 口径）。
+        pool.submit(() -> {
+            await(barrier);
+            for (int v = 2; v <= 7; v++) {
+                boolean wide = v % 2 == 0;
+                definitions.update("cpu", new MetricDefinition.Spec("%", "v" + v,
+                        AggregateFunction.AVG, 0.0, wide ? 200.0 : 100.0,
+                        wide ? Set.of("host", "rack") : Set.of("host")));
+            }
+        });
+        // 查询线程：钉死 v1 反复查询，无论交错到什么时刻，结果都必须整体符合 v1 口径。
+        pool.submit(() -> {
+            await(barrier);
+            com.github.xingjianluo.metricsalertenginejava.engine.QueryService q =
+                    new com.github.xingjianluo.metricsalertenginejava.engine.QueryService(store, defStore);
+            long to = clock.nowMillis();
+            for (int i = 0; i < 400; i++) {
+                var r = q.queryWithDefinition("cpu", Map.of(), to - 2000, to, 500,
+                        null, new MetricVersion("cpu", 1));
+                assertEquals(1, r.definitionVersion().version());
+                assertEquals(AggregateFunction.AVG, r.function());
+                for (var series : r.series()) {
+                    // v1 白名单只有 host：结果里绝不能出现带 rack 键的时间线。
+                    assertEquals(Set.of("host"), series.labels().asMap().keySet(),
+                            "v1 口径下不允许出现白名单外标签键的时间线");
+                    for (var w : series.windows()) {
+                        // v1 量程 [0,100]：越界点若混入，AVG 可能越出该区间；在区间内是必要不变量。
+                        assertTrue(w.missing() || (w.value() >= 0.0 && w.value() <= 100.0),
+                                "v1 口径下窗口值必须落在 v1 量程内，实际 " + w.value());
+                    }
+                }
+                checks.incrementAndGet();
+            }
+        });
+
+        pool.shutdown();
+        assertTrue(pool.awaitTermination(30, TimeUnit.SECONDS));
+        log.info("[查询自洽] 定义更新 v2..v7 与 600 次写入交错期间，{} 次钉死 v1 的查询全部满足："
+                + "版本=1、算子=AVG、无 rack 时间线、窗口值均在 [0,100]（v1 完整口径整体生效）", checks.get());
+        assertTrue(checks.get() > 0);
+    }
+
     private static void await(CyclicBarrier barrier) {
         try {
             barrier.await();

@@ -136,6 +136,24 @@ public class TimeSeriesStore {
         return results;
     }
 
+    /**
+     * 对一份点快照（可以是过滤后的子集）做滚动窗口聚合，窗口语义与 {@link #query} 完全一致。
+     * 供查询层在应用指标定义口径（值域 / 标签键白名单过滤）后复用同一套聚合逻辑。
+     */
+    public List<SeriesAggregation.WindowValue> aggregateWindows(NavigableMap<Long, Double> points,
+                                                                long fromMillis,
+                                                                long toMillis,
+                                                                long windowMillis,
+                                                                AggregateFunction function) {
+        if (windowMillis <= 0) {
+            throw new IllegalArgumentException("windowMillis must be positive");
+        }
+        if (toMillis <= fromMillis) {
+            throw new IllegalArgumentException("toMillis must be greater than fromMillis");
+        }
+        return aggregate(points, fromMillis, toMillis, windowMillis, function);
+    }
+
     private List<SeriesAggregation.WindowValue> aggregate(NavigableMap<Long, Double> points,
                                                           long from, long to, long window,
                                                           AggregateFunction function) {
